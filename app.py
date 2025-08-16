@@ -2,9 +2,9 @@ import streamlit as st
 # from streamlit_option_menu import option_menu
 import pandas as pd
 import joblib
-import seaborn as sns
-import matplotlib.pyplot as plt
-import plotly.express as px
+# import seaborn as sns
+# import matplotlib.pyplot as plt
+# import plotly.express as px
 
 # ============================
 # PAGE CONFIG
