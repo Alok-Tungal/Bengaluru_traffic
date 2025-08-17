@@ -8,7 +8,8 @@ st.title("🚦 Bangalore Traffic Dataset - Step 1")
 
 # --- Load dataset directly from GitHub ---
 # Replace the below link with your raw GitHub CSV file link
-github_csv_url = "https://raw.githubusercontent.com/<your-username>/<your-repo>/main/bangalore_traffic.csv"
+github_csv_url = "https://raw.githubusercontent.com/aloktungal/Traffic-Project/main/bangalore_traffic.csv"
+
 
 @st.cache_data
 def load_data():
