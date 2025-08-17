@@ -34,7 +34,7 @@ except Exception:
 
 # ----------------------
 # CONFIG - change this to your raw GitHub CSV URL (or paste in sidebar)
-GITHUB_RAW_URL = st.secrets.get("GITHUB_RAW_URL", https://github.com/Alok-Tungal/Bengaluru_traffic/edit/main/app.py")
+GITHUB_RAW_URL = st.secrets.get("GITHUB_RAW_URL", "https://github.com/Alok-Tungal/Bengaluru_traffic/edit/main/app.py")
 # ----------------------
 
 # ---------- Styling ----------
