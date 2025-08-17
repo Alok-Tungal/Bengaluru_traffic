@@ -77,7 +77,7 @@
 #         if {'DayOfWeek','Traffic Volume'}.issubset(df.columns):
 #             fig, ax = plt.subplots(figsize=(8,4))
 #             sns.boxplot(data=df, x="DayOfWeek", y="Traffic Volume", ax=ax)
-#             st.pyplot(fig)
+#             st.pyplot(fig) 
 #         else:
 #             st.info("Add columns 'DayOfWeek' and 'Traffic Volume' for this plot.")
 
