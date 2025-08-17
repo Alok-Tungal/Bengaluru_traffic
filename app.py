@@ -15,7 +15,7 @@
 # df=pd.read_csv("Banglore_cleaned_data.csv")
 # # ---------- Custom CSS ----------
 # st.markdown("""
-#     <style>
+#     <style> 
 #         body { background-color: #f9f9f9; font-family: 'Segoe UI', sans-serif; }
 #         .main, .block-container { padding-top: 1rem; padding-bottom: 1rem; }
 #         .stButton>button {
