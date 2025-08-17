@@ -163,7 +163,7 @@ with st.sidebar:
 # -------------------------
 # Data loader (cache by URL + reload flag)
 
-model = joblib.load("best_rf_model.zip")
+model = joblib.load("best_rf_model.joblib")
 # -------------------------
 @st.cache_data
 def load_from_github(url: str, force_reload: bool = False):
