@@ -1,29 +1,25 @@
 import streamlit as st
 import pandas as pd
 
-# Page config
-st.set_page_config(page_title="🚦 Bangalore Traffic Analysis", layout="wide")
-
-st.title("🚦 Bangalore Traffic Dataset - Step 1") 
-
-# --- Load dataset directly from GitHub ---
-# Replace the below link with your raw GitHub CSV file link
-github_csv_url = "https://github.com/Alok-Tungal/Bengaluru_traffic/blob/main/app.py"
-
+# Your raw GitHub CSV link (RAW format, not the HTML page link!)
+url = "https://raw.githubusercontent.com/<your-username>/<repo-name>/main/<filename>.csv"
 
 @st.cache_data
-def load_data():  
-    df = pd.read_csv(github_csv_url)
+def load_data():
+    try:
+        # Try reading with default CSV format
+        df = pd.read_csv(url, engine="python", on_bad_lines="skip")
+    except Exception:
+        # Fallback: try tab separator if comma fails
+        df = pd.read_csv(url, sep="\t", engine="python", on_bad_lines="skip")
+
+    # --- Basic cleaning ---
+    df.columns = df.columns.str.strip()  # remove spaces
+    df = df.dropna(how="all")            # drop empty rows
+    df = df.fillna("Unknown")            # replace NaN
     return df
 
 df = load_data()
 
-st.success("✅ Data Loaded from GitHub Successfully!")
-
-# Display preview
-st.subheader("🔎 Dataset Preview")
+st.write("✅ Dataset loaded successfully from GitHub")
 st.dataframe(df.head())
-
-# Show basic info
-st.subheader("📊 Dataset Shape")
-st.write(f"Rows: {df.shape[0]}, Columns: {df.shape[1]}")
