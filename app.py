@@ -12,7 +12,7 @@ github_csv_url = "https://raw.githubusercontent.com/aloktungal/Traffic-Project/m
 
 
 @st.cache_data
-def load_data():
+def load_data():  
     df = pd.read_csv(github_csv_url)
     return df
 
