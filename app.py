@@ -4,7 +4,7 @@ import pandas as pd
 # Page config
 st.set_page_config(page_title="🚦 Bangalore Traffic Analysis", layout="wide")
 
-st.title("🚦 Bangalore Traffic Dataset - Step 1")
+st.title("🚦 Bangalore Traffic Dataset - Step 1") 
 
 # --- Load dataset directly from GitHub ---
 # Replace the below link with your raw GitHub CSV file link
