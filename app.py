@@ -86,532 +86,405 @@
 #     st.write("Hook your saved model here and build the input form.")
 #     st.caption("We can wire this to `best_rf_model.joblib` once your preprocessing is finalized.")
 
-
-
-
-
 # app.py
 import streamlit as st
-st.set_page_config(page_title="🚦 Bangalore Traffic — Advanced", layout="wide")
+st.set_page_config(page_title="🚦 Bangalore Traffic — RealTime Visual + ML", layout="wide")
 
-# ---- safe optional imports ----
+# ---- Optional widget import (fallback handled) ----
 try:
     from streamlit_option_menu import option_menu
     HAS_OPTION_MENU = True
 except Exception:
     HAS_OPTION_MENU = False
 
+# ---- standard imports ----
 import pandas as pd
 import numpy as np
-import joblib
-import os
-import io
-import time
-
-# ML imports
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, RobustScaler
-from sklearn.pipeline import Pipeline
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split, RandomizedSearchCV, cross_val_score
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-
-# Plotting
+import requests, io, time, joblib, os
+from datetime import datetime
+import plotly.express as px
 import matplotlib.pyplot as plt
 import seaborn as sns
-import plotly.express as px
 sns.set_style("whitegrid")
 
-# SHAP (optional)
+# ML imports (used in Train page)
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, RobustScaler
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+# Optional SHAP
 try:
     import shap
     HAS_SHAP = True
 except Exception:
     HAS_SHAP = False
 
-# ----------------------
-# Custom CSS (nice UI)
-# ----------------------
+# -------------------------
+# CONFIG: set your GitHub raw CSV URL here
+# (replace with your actual raw file URL)
+GITHUB_RAW_URL = st.secrets.get("GITHUB_RAW_URL", "https://raw.githubusercontent.com/your-username/your-repo/main/bangalore_traffic.csv")
+# -------------------------
+
+# Custom CSS for nicer look
 st.markdown(
     """
     <style>
-      body { background-color: #f7f8fb; font-family: 'Segoe UI', Roboto, sans-serif; }
-      .block-container { padding: 1.25rem 2rem; }
-      .stButton>button { background-color:#0f766e; color:white; border-radius:8px; }
-      .metric-label { color: #6b7280; font-size:0.9rem; }
-      .kpi { background: white; border-radius:10px; padding:12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+      body { background-color: #fbfbfc; font-family: 'Segoe UI', Roboto, sans-serif; }
+      .block-container { padding: 1rem 1.5rem; }
+      .stButton>button { background:#0f766e; color:white; border-radius:8px; padding:6px 12px; }
+      .kpi { background: white; border-radius:10px; padding:12px; box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
     </style>
-    """, unsafe_allow_html=True
+    """,
+    unsafe_allow_html=True,
 )
 
-# ----------------------
-# Utilities
-# ----------------------
-def safe_ohe(sparse_default=False):
-    """Return OneHotEncoder instance using correct keyword for sklearn version."""
-    # sklearn >=1.2 uses sparse_output, older versions use sparse
-    try:
-        return OneHotEncoder(handle_unknown='ignore', sparse_output=not sparse_default)
-    except TypeError:
-        return OneHotEncoder(handle_unknown='ignore', sparse=not sparse_default)
-
-def get_feature_names_from_column_transformer(ct, input_features):
-    """
-    Attempt to return feature names after ColumnTransformer transformation.
-    Works for modern sklearn; falls back to combining numeric and OHE names.
-    """
-    try:
-        # sklearn >=1.0
-        names = ct.get_feature_names_out()
-        return list(names)
-    except Exception:
-        # fallback: build manually
-        feature_names = []
-        for name, transformer, cols in ct.transformers_:
-            if name == 'remainder':
-                continue
-            if transformer == 'passthrough':
-                feature_names.extend(list(cols))
-                continue
-            # transformer might be OneHotEncoder or scaler
-            if hasattr(transformer, 'get_feature_names_out'):
-                try:
-                    out = transformer.get_feature_names_out(cols)
-                    feature_names.extend(list(out))
-                except Exception:
-                    feature_names.extend(list(cols))
-            else:
-                feature_names.extend(list(cols))
-        return feature_names
-
-def evaluate_regression(y_true, y_pred):
-    mse = mean_squared_error(y_true, y_pred)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    return {"mse": mse, "rmse": rmse, "mae": mae, "r2": r2}
-
-# ----------------------
-# Sidebar navigation
-# ----------------------
+# -------------------------
+# Sidebar
+# -------------------------
 with st.sidebar:
-    st.image("https://i.imgur.com/0Z6fVQ5.png", width=180) if False else None
-    if HAS_OPTION_MENU:
-        selection = option_menu(
-            "Menu",
-            ["Home", "Upload Data", "EDA", "Train Model", "Evaluate", "Predict & Explain"],
-            icons=["house", "cloud-upload", "bar-chart", "robot", "check-square", "lightbulb"],
-            menu_icon="cast",
-            default_index=0
-        )
-    else:
-        selection = st.radio("Menu", ["Home", "Upload Data", "EDA", "Train Model", "Evaluate", "Predict & Explain"])
-
+    st.title("Bangalore Traffic")
+    st.write("Data source: GitHub raw CSV")
+    url_input = st.text_input("GitHub raw CSV URL", value=GITHUB_RAW_URL)
+    refresh_interval = st.number_input("Refresh TTL (s) — cache age", min_value=10, max_value=3600, value=60, step=10)
+    auto_simulate = st.checkbox("Enable auto-simulate (playback mode)", value=False)
     st.markdown("---")
-    st.write("Model file:")
-    uploaded_model = st.file_uploader("Upload `.joblib` model (optional)", type=["joblib", "pkl"])
-    st.write("Tip: you can upload a pre-trained `best_rf_model.joblib` here.")
+    st.write("Model & Export")
+    model_upload = st.file_uploader("Upload pipeline / model (.joblib/.pkl) optional", type=["joblib","pkl"])
     st.markdown("---")
-    st.write("About")
-    st.info("Bangalore Traffic — advanced Streamlit app. Built for your project.")
+    st.write("Controls")
+    if st.button("Force reload from GitHub"):
+        # clear cache and reload
+        st.cache_data.clear()
+        st.experimental_rerun()
+    st.write("Tip: update CSV in your GitHub repo and press Force reload to pull latest data.")
 
-# ----------------------
-# Data loader (cached)
-# ----------------------
+# -------------------------
+# Data loader (cache by URL + reload flag)
+# -------------------------
 @st.cache_data
-def load_csv(file) -> pd.DataFrame:
-    if file is None:
+def load_from_github(url: str, force_reload: bool = False):
+    """
+    Load CSV from GitHub raw URL. Pass force_reload=True to bypass cache (useful when reloading).
+    """
+    if url.strip() == "":
         return pd.DataFrame()
-    return pd.read_csv(file)
+    try:
+        r = requests.get(url, timeout=15)
+        r.raise_for_status()
+        df = pd.read_csv(io.StringIO(r.text))
+        return df
+    except Exception as e:
+        st.error(f"Failed to load from GitHub: {e}")
+        return pd.DataFrame()
 
-# allow sample dataset if none provided
-SAMPLE_CSV = """Area Name,Road/Intersection Name,Traffic Volume,Average Speed,Travel Time Index,Congestion Level,Road Capacity Utilization,Incident Reports,Environmental Impact,Public Transport Usage,Traffic Signal Compliance,Parking Usage,Pedestrian and Cyclist Count,Weather Conditions,Roadwork and Construction Activity,Year,Month,Day,Hour,DayOfWeek,IsWeekend
+# load data (normal)
+df = load_from_github(url_input, force_reload=False)
+
+# record last load time
+if df is None or df.empty:
+    data_loaded = False
+    last_load_time = None
+else:
+    data_loaded = True
+    last_load_time = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+# allow optional model load
+if model_upload is not None:
+    try:
+        bytes_read = model_upload.read()
+        tmp_model_path = "/tmp/uploaded_model.joblib"
+        with open(tmp_model_path, "wb") as fh:
+            fh.write(bytes_read)
+        loaded_model = joblib.load(tmp_model_path)
+        st.sidebar.success("Model uploaded and loaded.")
+        st.session_state['uploaded_model'] = loaded_model
+    except Exception as e:
+        st.sidebar.error(f"Failed to load model: {e}")
+
+# if user uploaded a pipeline earlier in session, prefer that
+model_for_predict = st.session_state.get('uploaded_model', None)
+
+# -------------------------
+# Top row KPIs
+# -------------------------
+st.title("🚦 Bangalore Traffic — Live Visualizations & ML")
+if not data_loaded:
+    st.warning("No data loaded from GitHub. Please check the URL or press Force reload.")
+    st.info("You can also paste your GitHub raw URL in the sidebar.")
+    # offer sample load
+    if st.button("Load sample data into session"):
+        st.session_state.raw_df = pd.read_csv(io.StringIO("""Area Name,Road/Intersection Name,Traffic Volume,Average Speed,Travel Time Index,Congestion Level,Road Capacity Utilization,Incident Reports,Environmental Impact,Public Transport Usage,Traffic Signal Compliance,Parking Usage,Pedestrian and Cyclist Count,Weather Conditions,Roadwork and Construction Activity,Year,Month,Day,Hour,DayOfWeek,IsWeekend
 Indiranagar,100 Feet Road,50590,50.230299,1.5,100,100,0,151.18,70.63233,84.0446,85.403629,111,Clear,No,2022,1,1,0,5,1
 Indiranagar,CMH Road,30825,29.377125,1.5,100,100,1,111.65,41.924899,91.407038,59.983689,100,Clear,No,2022,1,1,0,5,1
-"""
+"""))
+        st.experimental_rerun()
+    st.stop()
 
-# ----------------------
-# Global session-state helpers
-# ----------------------
-if 'raw_df' not in st.session_state:
-    st.session_state.raw_df = None
-if 'preprocessor' not in st.session_state:
-    st.session_state.preprocessor = None
-if 'model' not in st.session_state:
-    st.session_state.model = None
-if 'feature_names' not in st.session_state:
-    st.session_state.feature_names = None
-if 'X_train_en' not in st.session_state:
-    st.session_state.X_train_en = None
-if 'y_train' not in st.session_state:
-    st.session_state.y_train = None
+# show last load time and row/col
+c1,c2,c3,c4 = st.columns(4)
+total_rows = len(df)
+c1.metric("Rows", total_rows)
+c2.metric("Columns", df.shape[1])
+c3.metric("Last loaded", last_load_time or "—")
+# quick KPI: mean traffic volume
+mean_tv = df["Traffic Volume"].mean() if "Traffic Volume" in df.columns else np.nan
+c4.metric("Avg Traffic Volume", f"{mean_tv:,.0f}" if not np.isnan(mean_tv) else "—")
 
-# ----------------------
-# Page: HOME
-# ----------------------
-if selection == "Home":
-    st.title("🚦 Bangalore Traffic — Advanced Dashboard")
-    st.markdown(
-        """
-        This app helps you:
-        - Explore Bangalore traffic dataset
-        - Train and tune ML models (RandomForest/XGBoost if available)
-        - Evaluate & explain predictions (feature importance, SHAP)
-        - Export prediction model for deployment
-        """
-    )
-    st.markdown("### Quick actions")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("Load sample data"):
-            st.session_state.raw_df = pd.read_csv(io.StringIO(SAMPLE_CSV))
-            st.success("Sample data loaded into session.")
-    with c2:
-        if st.button("Clear session"):
-            for k in ['raw_df','preprocessor','model','feature_names','X_train_en','y_train']:
-                st.session_state[k] = None
-            st.success("Session cleared.")
-    with c3:
-        st.write("Model loaded?" )
-        st.write("Yes" if st.session_state.model is not None else "No")
-
-# ----------------------
-# Page: Upload Data
-# ----------------------
-if selection == "Upload Data":
-    st.header("Upload your Bangalore traffic CSV")
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-    if uploaded_file is not None:
-        df = load_csv(uploaded_file)
-        st.session_state.raw_df = df
-        st.success("File uploaded and loaded into session.")
-        st.dataframe(df.head(10))
-    else:
-        st.info("No file uploaded. You can load sample data using Home > Load sample data.")
-    st.markdown("### Current session dataset preview")
-    if st.session_state.raw_df is not None:
-        st.dataframe(st.session_state.raw_df.head())
-
-# ----------------------
-# Page: EDA
-# ----------------------
-if selection == "EDA":
-    st.header("Exploratory Data Analysis")
-    df = st.session_state.raw_df
-    if df is None or df.empty:
-        st.warning("No dataset loaded. Upload or load sample data first.")
-    else:
-        st.subheader("Basic info")
-        st.write("Shape:", df.shape)
-        st.write("Columns:", df.columns.tolist())
-        st.write(df.describe(include='all').T)
-
-        st.subheader("Interactive filters")
-        cols = df.columns.tolist()
-        filter_col = st.selectbox("Filter by column (optional)", options=["None"] + cols)
-        if filter_col != "None":
-            unique_vals = df[filter_col].unique().tolist()[:100]
-            sel = st.multiselect(f"Select values for {filter_col}", options=unique_vals, default=unique_vals[:5])
-            df_filtered = df[df[filter_col].isin(sel)]
-        else:
-            df_filtered = df
-
-        st.subheader("Plots")
-        # Traffic Volume distribution
-        if "Traffic Volume" in df_filtered.columns:
-            fig = px.histogram(df_filtered, x="Traffic Volume", nbins=40, title="Traffic Volume distribution")
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Boxplot by Hour
-        if {"Hour","Traffic Volume"}.issubset(df_filtered.columns):
-            fig2, ax = plt.subplots(figsize=(10,4))
-            sns.boxplot(x="Hour", y="Traffic Volume", data=df_filtered, ax=ax)
-            st.pyplot(fig2)
-
-        # Correlation heatmap (numeric)
-        st.subheader("Correlation (numeric columns)")
-        numcols = df_filtered.select_dtypes(include=[np.number]).columns.tolist()
-        if len(numcols) >= 2:
-            corr = df_filtered[numcols].corr()
-            fig3, ax = plt.subplots(figsize=(10,8))
-            sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
-            st.pyplot(fig3)
-        else:
-            st.info("Not enough numeric columns for correlation.")
-
-# ----------------------
-# Page: Train Model
-# ----------------------
-if selection == "Train Model":
-    st.header("Train / Tune Model")
-    df = st.session_state.raw_df
-    if df is None or df.empty:
-        st.warning("Please upload or load sample data first.")
-    else:
-        st.info("Select target and feature columns. Defaults chosen for your dataset.")
-        all_cols = df.columns.tolist()
-
-        # Choose target
-        default_target = "Traffic Volume" if "Traffic Volume" in all_cols else all_cols[-1]
-        target_col = st.selectbox("Select target column (what to predict)", options=all_cols, index=all_cols.index(default_target))
-
-        # Detect categorical candidates (string/object)
-        detected_nominal = df.select_dtypes(include=['object','category']).columns.tolist()
-        st.write("Detected categorical columns:", detected_nominal)
-        nominal_cols = st.multiselect("Confirm categorical columns (one-hot encoded)", options=detected_nominal, default=detected_nominal)
-
-        # Numeric columns
-        numeric_cols = [c for c in all_cols if c not in nominal_cols + [target_col]]
-        st.write("Numeric columns (will be scaled):", numeric_cols)
-
-        # Train/test split
-        test_size = st.slider("Test set size (%)", min_value=10, max_value=40, value=20)
-        random_state = st.number_input("Random state", value=42, step=1)
-        X = df[[c for c in all_cols if c != target_col]]
-        y = df[target_col]
-        btn_train = st.button("🔧 Preprocess & Train Default RandomForest")
-
-        if btn_train:
-            with st.spinner("Preprocessing and training... this may take some seconds"):
-                # Preprocessor
-                ohe = safe_ohe()
-                preprocessor = ColumnTransformer(
-                    transformers=[
-                        ('num', RobustScaler(), numeric_cols),
-                        ('cat', ohe, nominal_cols)
-                    ],
-                    remainder='drop'
-                )
-                # Prepare data arrays
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size/100.0, random_state=int(random_state))
-                X_train_en = preprocessor.fit_transform(X_train)
-                X_test_en = preprocessor.transform(X_test)
-
-                # Get feature names
-                try:
-                    feature_names = get_feature_names_from_column_transformer(preprocessor, X_train.columns)
-                except Exception:
-                    feature_names = None
-
-                # Train RF
-                rf = RandomForestRegressor(n_estimators=100, random_state=int(random_state), n_jobs=-1)
-                rf.fit(X_train_en, y_train)
-
-                # store in session
-                st.session_state.preprocessor = preprocessor
-                st.session_state.model = rf
-                st.session_state.feature_names = feature_names
-                st.session_state.X_train_en = X_train_en
-                st.session_state.y_train = y_train
-                st.success("Model trained and stored in session.")
-
-                # Basic eval
-                y_pred = rf.predict(X_test_en)
-                metrics = evaluate_regression(y_test, y_pred)
-                st.metric("Test R²", f"{metrics['r2']:.4f}")
-                st.metric("Test RMSE", f"{metrics['rmse']:.2f}")
-                st.metric("Test MAE", f"{metrics['mae']:.2f}")
-
-        # Optional: Hyperparameter tuning (RandomizedSearchCV)
-        st.markdown("#### Optional: Randomized Hyperparameter Tuning")
-        tune = st.checkbox("Run randomized tuning (slower, recommended with small n_iter)", value=False)
-        if tune:
-            n_iter = st.slider("n_iter (random combos)", 5, 60, 20)
-            cv = st.slider("CV folds", 2, 5, 3)
-            if st.button("Run RandomizedSearchCV"):
-                if st.session_state.preprocessor is None:
-                    st.error("Please run default training step first to setup preprocessor.")
-                else:
-                    with st.spinner("Tuning hyperparameters..."):
-                        # Use already transformed matrix to speed up (avoid re-transform)
-                        Xtr = st.session_state.X_train_en
-                        ytr = st.session_state.y_train
-
-                        param_grid = {
-                            'n_estimators': [100, 150, 200],
-                            'max_depth': [None, 10, 20],
-                            'max_features': ['sqrt', 'log2', None],
-                            'min_samples_split': [2, 5, 10],
-                            'min_samples_leaf': [1, 2, 4],
-                            'bootstrap': [True, False]
-                        }
-                        rf = RandomForestRegressor(random_state=42, n_jobs=-1)
-                        rnd = RandomizedSearchCV(rf, param_distributions=param_grid, n_iter=n_iter, cv=cv, n_jobs=-1, scoring='r2', verbose=1, random_state=42)
-                        rnd.fit(Xtr, ytr)
-                        best = rnd.best_estimator_
-                        st.session_state.model = best
-                        st.success("RandomizedSearch finished. Best model stored in session.")
-                        st.write("Best params:", rnd.best_params_)
-
-# ----------------------
-# Page: Evaluate
-# ----------------------
-if selection == "Evaluate":
-    st.header("Model Evaluation & Diagnostics")
-    df = st.session_state.raw_df
-    model = st.session_state.model
-    preprocessor = st.session_state.preprocessor
-
-    if model is None or preprocessor is None:
-        st.warning("Train a model first in 'Train Model' or upload a model in the sidebar.")
-    else:
-        st.write("Model type:", type(model).__name__)
-        # If dataset loaded, do test evaluation
-        if df is None or df.empty:
-            st.info("No dataset loaded to evaluate against. Upload dataset in Upload Data.")
-        else:
-            # ask for target
-            default_target = "Traffic Volume" if "Traffic Volume" in df.columns else df.columns[-1]
-            target_col = st.selectbox("Select target column for evaluation", options=df.columns.tolist(), index=df.columns.tolist().index(default_target))
-            # Prepare X/y and split
-            X = df[[c for c in df.columns if c != target_col]]
-            y = df[target_col]
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            X_test_en = preprocessor.transform(X_test)
-            y_pred = model.predict(X_test_en)
-            metrics = evaluate_regression(y_test, y_pred)
-            st.subheader("Metrics on holdout set")
-            st.metric("R²", f"{metrics['r2']:.4f}")
-            st.metric("RMSE", f"{metrics['rmse']:.2f}")
-            st.metric("MAE", f"{metrics['mae']:.2f}")
-
-            # Residual plot
-            fig, ax = plt.subplots(figsize=(8,4))
-            residuals = y_test - y_pred
-            ax.scatter(y_pred, residuals, alpha=0.6)
-            ax.axhline(0, color='red', linestyle='--')
-            ax.set_xlabel("Predicted")
-            ax.set_ylabel("Residuals")
-            ax.set_title("Residual Plot")
-            st.pyplot(fig)
-
-            # Pred vs actual
-            fig2 = px.scatter(x=y_test, y=y_pred, labels={'x':'Actual','y':'Predicted'}, title="Actual vs Predicted")
-            st.plotly_chart(fig2, use_container_width=True)
-
-            # Feature importance
-            if hasattr(model, "feature_importances_"):
-                st.subheader("Feature Importance")
-                # get names
-                fnames = st.session_state.feature_names
-                if fnames is None:
-                    # attempt to build names
-                    try:
-                        fnames = get_feature_names_from_column_transformer(preprocessor, X.columns)
-                    except Exception:
-                        fnames = [f"f{i}" for i in range(len(model.feature_importances_))]
-                fi = pd.Series(model.feature_importances_, index=fnames).sort_values(ascending=False)
-                st.dataframe(fi.head(30))
-                fig3 = px.bar(fi.head(20).reset_index().rename(columns={'index':'feature', 0:'importance'}), x='importance', y='feature', orientation='h')
-                st.plotly_chart(fig3, use_container_width=True)
-            else:
-                st.info("Model has no feature_importances_ attribute.")
-
-            # Optional SHAP (if available)
-            if HAS_SHAP:
-                if st.checkbox("Show SHAP summary (may be slow)", value=False):
-                    with st.spinner("Computing SHAP values..."):
-                        explainer = shap.TreeExplainer(model)
-                        X_sample = X_test_en if hasattr(X_test_en, "shape") else preprocessor.transform(X_test)
-                        shap_vals = explainer.shap_values(X_sample if isinstance(X_sample, np.ndarray) else X_test_en)
-                        st.subheader("SHAP summary")
-                        fig_shap = shap.summary_plot(shap_vals, X_sample if isinstance(X_sample, (np.ndarray, pd.DataFrame)) else X_test_en, show=False)
-                        st.pyplot(bbox_inches='tight')
-
-# ----------------------
-# Page: Predict & Explain
-# ----------------------
-if selection == "Predict & Explain":
-    st.header("Predict on new input / Explain predictions")
-    model = st.session_state.model
-    preprocessor = st.session_state.preprocessor
-    df = st.session_state.raw_df
-
-    if model is None or preprocessor is None:
-        st.warning("Train a model first or upload a pre-trained model in the sidebar.")
-    else:
-        # Build input widgets dynamically using feature names from preprocessor
-        # If we don't have mapping, ask user to provide sample row
-        fnames = st.session_state.feature_names
-        if fnames is None:
-            try:
-                fnames = get_feature_names_from_column_transformer(preprocessor, df[[c for c in df.columns if c not in [st.session_state.get('target_col','Traffic Volume')]]].columns)
-            except Exception:
-                fnames = None
-
-        st.subheader("Provide values for prediction (you can copy-paste a CSV row too)")
-
-        if df is not None and not df.empty:
-            # Use original column groups for building form
-            all_cols = df.columns.tolist()
-            target_default = "Traffic Volume" if "Traffic Volume" in all_cols else all_cols[-1]
-            target_col = st.selectbox("Target column (just for reference)", options=all_cols, index=all_cols.index(target_default))
-        else:
-            target_col = "Traffic Volume"
-
-        # We'll ask for the original features (before encoding): numeric_cols and nominal_cols
-        # If session preprocessor exists -> try to extract original cols from preprocessor
-        try:
-            # Attempt to recover original transformer columns
-            orig_num = preprocessor.transformers_[0][2]
-            orig_cat = preprocessor.transformers_[1][2]
-        except Exception:
-            # fallback ask user
-            st.write("Could not infer original feature groups; please input using the simple fields below.")
-            orig_num = []
-            orig_cat = []
-
-        st.write("Numeric features (provide values):")
-        input_vals = {}
-        for col in orig_num:
-            col_min = int(df[col].min()) if col in df.columns and np.issubdtype(df[col].dtype, np.number) else 0
-            col_max = int(df[col].max()) if col in df.columns and np.issubdtype(df[col].dtype, np.number) else 100000
-            default = int(df[col].median()) if col in df.columns and np.issubdtype(df[col].dtype, np.number) else 0
-            input_vals[col] = st.number_input(col, value=float(default), format="%.3f")
-
-        st.write("Categorical features:")
-        for col in orig_cat:
-            opts = df[col].unique().tolist() if col in df.columns else []
-            if len(opts) > 0:
-                input_vals[col] = st.selectbox(col, options=opts)
-            else:
-                input_vals[col] = st.text_input(col, value="")
-
-        if st.button("Predict"):
-            # Build DataFrame
-            inp_df = pd.DataFrame([input_vals])
-            X_en = preprocessor.transform(inp_df)
-            pred = model.predict(X_en)[0]
-            st.success(f"Prediction: {pred:.3f}")
-
-            if HAS_SHAP:
-                if st.checkbox("Explain with SHAP (single prediction)"):
-                    explainer = shap.TreeExplainer(model)
-                    shap_vals = explainer.shap_values(X_en)
-                    st.subheader("SHAP values (bar)")
-                    shap.force_plot(explainer.expected_value, shap_vals, inp_df, matplotlib=True, show=False)
-                    st.pyplot()
-
-        # Allow download of model
-        st.markdown("### Export model")
-        if st.button("Download model (.joblib)"):
-            # save to server temp and provide link
-            fname = "exported_model.joblib"
-            joblib.dump(model, fname)
-            with open(fname, "rb") as f:
-                btn = st.download_button(label="Download model", data=f, file_name=fname)
-            os.remove(fname)
-
-# ----------------------
-# If user uploaded a model in sidebar, load it into session
-# ----------------------
-if uploaded_model is not None:
+# -------------------------
+# Quick preprocessing conveniences
+# -------------------------
+# Create datetime if possible
+if {"Year","Month","Day","Hour"}.issubset(df.columns):
     try:
-        model_bytes = uploaded_model.read()
-        tmp_path = "/tmp/uploaded_model.joblib"
-        with open(tmp_path, "wb") as fh:
-            fh.write(model_bytes)
-        st.session_state.model = joblib.load(tmp_path)
-        st.success("Uploaded model loaded into session.")
-    except Exception as e:
-        st.error(f"Failed to load uploaded model: {e}")
+        df['timestamp'] = pd.to_datetime(df[['Year','Month','Day','Hour']].rename(columns={'Hour':'hour'}), errors='coerce')
+    except Exception:
+        # fallback: create date string then parse
+        df['timestamp'] = pd.to_datetime(df[['Year','Month','Day']].astype(str).agg('-'.join, axis=1), errors='coerce')
+else:
+    df['timestamp'] = pd.NaT
+
+# cast DayOfWeek/IsWeekend numeric if present
+if 'DayOfWeek' in df.columns:
+    df['DayOfWeek'] = pd.to_numeric(df['DayOfWeek'], errors='coerce')
+if 'IsWeekend' in df.columns:
+    df['IsWeekend'] = pd.to_numeric(df['IsWeekend'], errors='coerce')
+
+# -------------------------
+# Sidebar filter (interactive)
+# -------------------------
+st.sidebar.markdown("### Filters")
+area_list = df['Area Name'].unique().tolist() if 'Area Name' in df.columns else []
+sel_area = st.sidebar.multiselect("Select Area(s)", options=area_list, default=area_list[:6])
+hour_range = st.sidebar.slider("Hour range", 0, 23, (0,23))
+days = st.sidebar.multiselect("DayOfWeek", options=sorted(df['DayOfWeek'].dropna().unique().astype(int).tolist()) if 'DayOfWeek' in df.columns else [], default=sorted(df['DayOfWeek'].dropna().unique().astype(int).tolist()) if 'DayOfWeek' in df.columns else [])
+
+# apply filters
+df_filtered = df.copy()
+if sel_area:
+    df_filtered = df_filtered[df_filtered['Area Name'].isin(sel_area)]
+df_filtered = df_filtered[(df_filtered['Hour']>=hour_range[0]) & (df_filtered['Hour']<=hour_range[1])]
+if days:
+    df_filtered = df_filtered[df_filtered['DayOfWeek'].isin(days)]
+
+# -------------------------
+# Visualization section
+# -------------------------
+st.header("Interactive Visualizations")
+
+# 1) Time series (daily aggregate)
+st.subheader("Traffic Volume — Time Series (daily aggregated)")
+if 'timestamp' in df_filtered.columns and not df_filtered['timestamp'].isna().all():
+    df_ts = df_filtered.dropna(subset=['timestamp']).copy()
+    df_ts['date'] = df_ts['timestamp'].dt.date
+    ts_agg = df_ts.groupby('date')['Traffic Volume'].sum().reset_index()
+    fig_ts = px.line(ts_agg, x='date', y='Traffic Volume', title="Daily Traffic Volume")
+    st.plotly_chart(fig_ts, use_container_width=True)
+else:
+    st.info("Timestamp columns not detected or invalid (Year/Month/Day/Hour required).")
+
+# 2) Hour vs Day Heatmap
+st.subheader("Heatmap — Average Traffic Volume by DayOfWeek & Hour")
+if {'DayOfWeek','Hour','Traffic Volume'}.issubset(df_filtered.columns):
+    pivot = df_filtered.pivot_table(index='DayOfWeek', columns='Hour', values='Traffic Volume', aggfunc='mean', fill_value=0)
+    fig_hm = px.imshow(pivot, aspect='auto', labels=dict(x="Hour", y="DayOfWeek", color="Avg Traffic"))
+    st.plotly_chart(fig_hm, use_container_width=True)
+else:
+    st.info("Need columns DayOfWeek, Hour, and Traffic Volume to show heatmap.")
+
+# 3) Top Roads/Intersections
+st.subheader("Top Roads / Intersections by Average Traffic Volume")
+if 'Road/Intersection Name' in df_filtered.columns:
+    top_n = st.slider("Top N", 5, 30, 10)
+    top_roads = df_filtered.groupby('Road/Intersection Name')['Traffic Volume'].mean().sort_values(ascending=False).head(top_n)
+    fig_bar = px.bar(top_roads.reset_index(), x='Traffic Volume', y='Road/Intersection Name', orientation='h', title="Top Roads by Avg Traffic")
+    st.plotly_chart(fig_bar, use_container_width=True)
+else:
+    st.info("No Road/Intersection Name column found.")
+
+# 4) Scatter: Average Speed vs Traffic Volume
+st.subheader("Average Speed vs Traffic Volume (scatter)")
+if {'Average Speed','Traffic Volume'}.issubset(df_filtered.columns):
+    fig_sc = px.scatter(df_filtered, x='Traffic Volume', y='Average Speed', color='Area Name' if 'Area Name' in df_filtered.columns else None,
+                        hover_data=['Road/Intersection Name'] if 'Road/Intersection Name' in df_filtered.columns else None,
+                        title="Traffic Volume vs Average Speed")
+    st.plotly_chart(fig_sc, use_container_width=True)
+else:
+    st.info("Need Average Speed and Traffic Volume columns for scatter.")
+
+# 5) Distribution and Boxplots
+st.subheader("Distribution & Boxplots")
+col1, col2 = st.columns(2)
+with col1:
+    if 'Traffic Volume' in df_filtered.columns:
+        fig_dist = px.histogram(df_filtered, x='Traffic Volume', nbins=50, title="Traffic Volume Distribution")
+        st.plotly_chart(fig_dist, use_container_width=True)
+with col2:
+    if {'DayOfWeek','Traffic Volume'}.issubset(df_filtered.columns):
+        fig_box = px.box(df_filtered, x='DayOfWeek', y='Traffic Volume', title="Traffic Volume by DayOfWeek")
+        st.plotly_chart(fig_box, use_container_width=True)
+
+# 6) Correlation heatmap
+st.subheader("Correlation (numeric features)")
+numcols = df_filtered.select_dtypes(include=np.number).columns.tolist()
+if len(numcols) >= 3:
+    corr = df_filtered[numcols].corr()
+    fig_corr = px.imshow(corr, text_auto=".2f", title="Correlation matrix")
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+# -------------------------
+# Real-time simulation (playback)
+# -------------------------
+st.header("Realtime Simulation / Live Playback")
+sim_container = st.empty()
+sim_controls = st.columns([1,1,1,2])
+with sim_controls[0]:
+    sim_play = st.button("▶️ Start Playback")
+with sim_controls[1]:
+    sim_stop = st.button("⏹ Stop Playback")
+with sim_controls[2]:
+    sim_speed = st.slider("Interval (sec)", 1, 5, 2)
+with sim_controls[3]:
+    sim_rows = st.slider("Use last N rows to playback", 10, min(500, len(df)), 100)
+
+if sim_play:
+    st.session_state['sim_stop'] = False
+if sim_stop:
+    st.session_state['sim_stop'] = True
+
+if st.session_state.get('sim_stop', True) == False:
+    # playback
+    tail = df_filtered.tail(sim_rows).reset_index(drop=True)
+    placeholder = sim_container.empty()
+    for i in range(len(tail)):
+        if st.session_state.get('sim_stop', False):
+            break
+        current = tail.iloc[:i+1]
+        # small live KPI
+        live_volume = int(current['Traffic Volume'].sum())
+        live_avg_speed = float(current['Average Speed'].mean()) if 'Average Speed' in current.columns else np.nan
+        # draw
+        with placeholder.container():
+            r1, r2 = st.columns(2)
+            r1.metric("Live cumulative volume", f"{live_volume:,}")
+            r2.metric("Live avg speed", f"{live_avg_speed:.2f}" if not np.isnan(live_avg_speed) else "—")
+            fig = px.line(current, x=current.index, y='Traffic Volume', title="Playback Traffic Volume (recent slice)")
+            st.plotly_chart(fig, use_container_width=True)
+        time.sleep(sim_speed)
+    st.session_state['sim_stop'] = True
+    sim_container.empty()
+
+# -------------------------
+# Train Model quick (optional)
+# -------------------------
+st.header("Model: Quick Train (optional)")
+if st.button("Train quick RandomForest on current filtered data"):
+    # pick features automatically
+    df_train = df_filtered.copy()
+    target = "Traffic Volume"
+    if target not in df_train.columns:
+        st.error("Traffic Volume column not present to train on.")
+    else:
+        # detect nominal cols
+        nominal = df_train.select_dtypes(include=['object','category']).columns.tolist()
+        if target in nominal: nominal.remove(target)
+        numeric = [c for c in df_train.columns if c not in nominal + [target,'timestamp']]
+        st.info(f"Detected numeric: {numeric[:10]} ...  nominal: {nominal[:10]} ...")
+        X = df_train[numeric + nominal]
+        y = df_train[target]
+        # simple preprocessing: numeric scaled, cat OHE
+        try:
+            ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
+        except TypeError:
+            ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+        preprocessor = ColumnTransformer([('num', RobustScaler(), numeric), ('cat', ohe, nominal)])
+        X_en = preprocessor.fit_transform(X)
+        # fit
+        rf = RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1)
+        rf.fit(X_en, y)
+        st.session_state['preprocessor'] = preprocessor
+        st.session_state['model'] = rf
+        st.success("Trained RandomForest and stored in session.")
+        # quick eval: train/test split
+        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+        Xte_en = preprocessor.transform(Xte)
+        ypred = rf.predict(Xte_en)
+        metrics = {
+            'r2': r2_score(yte, ypred),
+            'rmse': mean_squared_error(yte, ypred, squared=False),
+            'mae': mean_absolute_error(yte, ypred)
+        }
+        st.write("Eval on holdout:", metrics)
+
+# -------------------------
+# Predict UI (using session model or uploaded model)
+# -------------------------
+st.header("Predict — use model stored in session (or upload a pipeline)")
+model = st.session_state.get('model', model_for_predict)
+preproc = st.session_state.get('preprocessor', None)
+
+if model is None:
+    st.info("No model available in session. Train locally (above) or upload a pipeline that includes preprocessing.")
+else:
+    st.write("Model loaded. Provide new input values.")
+    # attempt to infer numeric/categorical original columns
+    # if preproc available, get numeric/cat from it
+    if preproc is not None:
+        try:
+            orig_num = preproc.transformers_[0][2]
+            orig_cat = preproc.transformers_[1][2]
+        except Exception:
+            orig_num = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != 'Traffic Volume']
+            orig_cat = [c for c in df.columns if c not in orig_num and c != 'Traffic Volume']
+    else:
+        orig_num = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != 'Traffic Volume']
+        orig_cat = [c for c in df.columns if c not in orig_num and c != 'Traffic Volume']
+    form = st.form("predict_form")
+    inputs = {}
+    cols_num = form.columns(2)
+    for i, col in enumerate(orig_num):
+        default = float(df[col].median()) if col in df.columns and pd.api.types.is_numeric_dtype(df[col]) else 0.0
+        inputs[col] = cols_num[i % 2].number_input(col, value=float(default))
+    for col in orig_cat:
+        opts = df[col].unique().tolist() if col in df.columns else []
+        inputs[col] = form.selectbox(col, options=opts) if opts else form.text_input(col, value="")
+    submitted = form.form_submit_button("Predict")
+
+    if submitted:
+        X_new = pd.DataFrame([inputs])
+        if preproc is not None:
+            X_new_en = preproc.transform(X_new)
+            yhat = model.predict(X_new_en)[0]
+        else:
+            # if model is a pipeline that includes preprocessing it will accept X_new
+            try:
+                yhat = model.predict(X_new)[0]
+            except Exception as e:
+                st.error(f"Prediction failed: model likely expects preprocessed input. Error: {e}")
+                yhat = None
+        if yhat is not None:
+            st.success(f"Predicted Traffic Volume: {yhat:,.2f}")
+
+            if HAS_SHAP and isinstance(model, (RandomForestRegressor,)):
+                if st.checkbox("Show SHAP for this prediction"):
+                    st.info("Computing SHAP (may take several seconds)...")
+                    explainer = shap.TreeExplainer(model)
+                    pre = preproc.transform(X_new) if preproc is not None else X_new
+                    shap_values = explainer.shap_values(pre)
+                    fig_shap = shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], feature_names=preproc.get_feature_names_out())
+                    st.pyplot(fig_shap)
+
+# -------------------------
+# Footer / Export model
+# -------------------------
+st.markdown("---")
+if st.session_state.get('model', None) is not None:
+    if st.button("Export model (.joblib)"):
+        fname = "exported_model.joblib"
+        joblib.dump(st.session_state['model'], fname)
+        with open(fname, "rb") as f:
+            st.download_button("Download model", f, file_name=fname)
+        os.remove(fname)
+
+
