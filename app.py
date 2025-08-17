@@ -201,7 +201,8 @@ def load_data_cached(url):
 
 if refresh_cache:
     st.cache_data.clear()
-    st.experimental_rerun()
+    st.rerun()
+
 
 df = load_data_cached(github_url)
 
