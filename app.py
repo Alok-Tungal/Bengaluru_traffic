@@ -12,7 +12,7 @@ except Exception:
 import pandas as pd
 import matplotlib.pyplot as plt
 # import seaborn as sns
-
+df=pd.read_csv("Banglore_cleaned_data.csv")
 # ---------- Custom CSS ----------
 st.markdown("""
     <style>
